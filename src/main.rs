@@ -9,14 +9,16 @@ pub struct GatewayUrlResult {
 pub struct GatewayMessageFrame {
     op: u32,
     d: Option<serde_json::Value>,
-    s: Option<u32>
+    s: Option<u32>,
+    t: Option<String>
 }
 impl GatewayMessageFrame {
     pub fn new(op: u32) -> Self {
         GatewayMessageFrame {
             op,
             d: None,
-            s: None
+            s: None,
+            t: None
         }
     }
 
@@ -32,6 +34,11 @@ const GATEWAY_OP_HEARTBEAT_ACK: u32 = 11;
 #[derive(serde::Deserialize)]
 pub struct GatewayHelloData {
     pub heartbeat_interval: u64
+}
+
+#[derive(serde::Deserialize)]
+pub struct GatewayReadyData {
+    pub user: User
 }
 
 #[derive(serde::Serialize)]
@@ -115,6 +122,26 @@ pub struct GatewayStatusUpdateData<'s> {
     pub afk: bool
 }
 
+type Snowflake = String;
+
+#[derive(serde::Deserialize)]
+pub struct User {
+    pub id: Snowflake,
+    pub username: String
+}
+
+#[derive(serde::Deserialize)]
+pub struct Message {
+    pub content: String,
+    pub author: User,
+    pub channel_id: Snowflake
+}
+
+#[derive(serde::Serialize)]
+pub struct CreateMessagePayload<'s> {
+    pub content: &'s str
+}
+
 const DISCORD_TOKEN: &'static str = include_str!("../.discord_token");
 
 #[async_std::main]
@@ -182,14 +209,45 @@ async fn main() {
             )
         )
     ).expect("Failed to serialize"))).await.expect("Failed to send identify message");
+    let mut bot_user_id = None;
     while let Some(x) = r.next().await {
         match x.expect("receive failed") {
             tungstenite::Message::Text(t) => {
                 let f: GatewayMessageFrame = serde_json::from_str(&t).expect("Failed to deserialize text frame");
-                if let Some(s) = f.s { heartbeat_updates_sender.send(s).await.expect("Failed to send heartbeat updates"); }
+                if let Some(s) = f.s {
+                    heartbeat_updates_sender.send(s).await.expect("Failed to send heartbeat updates");
+                }
                 println!("data: {:?}", t);
+
+                if f.op == 0 {
+                    // generic event
+                    if f.t.as_deref().map_or(false, |s| s == "READY") {
+                        let d: GatewayReadyData = serde_json::from_value(f.d.expect("no message data?"))
+                            .expect("Failed to deserialize message data");
+                        bot_user_id = Some(d.user.id);
+                    } else if f.t.as_deref().map_or(false, |s| s == "MESSAGE_CREATE") {
+                        let d: Message = serde_json::from_value(f.d.expect("no message data?"))
+                            .expect("Failed to deserialize message data");
+                        if let Some(bot_uid) = bot_user_id.as_deref() {
+                            // 自分自身には反応しない
+                            if bot_uid == d.author.id { continue; }
+
+                            let resp_content = format!("<@{}> にゃーん！", d.author.id);
+                            let resp = CreateMessagePayload {
+                                content: &resp_content
+                            };
+                            let resp = surf::post(format!("https://discord.com/api/channels/{}/messages", d.channel_id))
+                                .body(serde_json::to_string(&resp).expect("Failed to serialize"))
+                                .header("Content-Type", "application/json")
+                                .header("Authorization", concat!("Bot ", include_str!("../.discord_token")))
+                                .recv_string().await
+                                .expect("Failed to send CreateMessage");
+                            println!("CreateMessage resp: {}", resp);
+                        }
+                    }
+                }
             },
-            _ => println!("non-text event")
+            e => println!("non-text event: {:?}", e)
         }
     }
 }
