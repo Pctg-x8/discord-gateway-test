@@ -27,8 +27,10 @@ impl GatewayMessageFrame {
         self
     }
 }
+const GATEWAY_OP_EVENT: u32 = 0;
 const GATEWAY_OP_HEARTBEAT: u32 = 1;
 const GATEWAY_OP_IDENTITY: u32 = 2;
+const GATEWAY_OP_HELLO: u32 = 10;
 const GATEWAY_OP_HEARTBEAT_ACK: u32 = 11;
 
 #[derive(serde::Deserialize)]
@@ -164,7 +166,7 @@ async fn main() {
             tungstenite::Message::Text(s) => {
                 println!("text: {:?}", s);
                 let xd: GatewayMessageFrame = serde_json::from_str(&s).expect("Failed to deserialize message");
-                if xd.op == 10 {
+                if xd.op == GATEWAY_OP_HELLO {
                     let hd: GatewayHelloData = serde_json::from_value(xd.d.expect("no hello data?"))
                         .expect("Failed to deserialize hello data");
                     break hd.heartbeat_interval;
@@ -219,7 +221,7 @@ async fn main() {
                 }
                 println!("data: {:?}", t);
 
-                if f.op == 0 {
+                if f.op == GATEWAY_OP_EVENT {
                     // generic event
                     if f.t.as_deref().map_or(false, |s| s == "READY") {
                         let d: GatewayReadyData = serde_json::from_value(f.d.expect("no message data?"))
